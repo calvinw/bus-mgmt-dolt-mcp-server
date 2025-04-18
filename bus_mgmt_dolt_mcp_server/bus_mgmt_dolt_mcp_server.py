@@ -65,8 +65,8 @@ def get_schema() -> str:
         return f"Error retrieving schema: {str(e)}"
 
 @mcp.tool()
-def query_data(sql: str) -> str:
-    """Execute SQL queries safely on the Dolt database"""
+def read_query(sql: str) -> str:
+    """Execute SQL read queries safely on the Dolt database"""
     try:
         # Execute the query
         response = requests.get(
@@ -223,11 +223,11 @@ def write_query(sql: str) -> str:
 
 @mcp.tool()
 def list_tables() -> str:
-    """List all tables in the database"""
+    """List the tables in the database"""
     try:
         response = requests.get(
             get_dolt_query_url(),
-            params={"q": "SHOW TABLES"}
+            params={"q": "SHOW TABLES WHERE Table_type = 'BASE TABLE'"}
         )
         response.raise_for_status()
         result = response.json()
