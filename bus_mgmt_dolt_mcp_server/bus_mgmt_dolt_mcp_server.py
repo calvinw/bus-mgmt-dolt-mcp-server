@@ -235,14 +235,65 @@ def list_tables() -> str:
         if "rows" not in result or not result["rows"]:
             return "No tables found."
 
-        # Extract table names from the rows
-        table_column_name = f"Tables_in_{DATABASE_NAME}"
-        tables = [row.get(table_column_name) for row in result["rows"] 
-                 if row.get(table_column_name)]
+        # Debug information
+        debug_info = [
+            "Debug information:",
+            f"DATABASE_NAME: {DATABASE_NAME}",
+            f"Expected column: Tables_in_{DATABASE_NAME}"
+        ]
         
+        if len(result["rows"]) > 0:
+            first_row = result["rows"][0]
+            debug_info.append(f"Available keys in first row: {list(first_row.keys())}")
+            
+            # Add sample row data
+            import json
+            debug_info.append(f"Sample row: {json.dumps(first_row, indent=2)}")
+        
+        # Extract table names from the rows
+        tables = []
+        expected_column = f"Tables_in_{DATABASE_NAME}"
+        
+        for row in result["rows"]:
+            # Try both the expected column name and direct value extraction
+            table_name = None
+            
+            # Try the expected column name format
+            if expected_column in row:
+                table_name = row.get(expected_column)
+            # If row has only one key, use its value (simpler API responses)
+            elif len(row) == 1:
+                table_name = list(row.values())[0]
+            # Look for any key ending with 'Tables_in_'
+            else:
+                for key in row:
+                    if key.startswith("Tables_in_"):
+                        table_name = row.get(key)
+                        break
+            
+            if table_name:
+                tables.append(table_name)
+        
+        if not tables:
+            # If we couldn't extract tables with the methods above, 
+            # just return all values from all rows as a fallback
+            for row in result["rows"]:
+                tables.extend([str(v) for v in row.values() if v])
+        
+        # Add tables info to debug output
+        debug_info.append(f"Extracted tables count: {len(tables)}")
+        if tables:
+            debug_info.append("First few tables: " + ", ".join(tables[:3]))
+        
+        # Print debug info to server console
+        print("\n".join(debug_info))
+        
+        # Return the table list to the client
         return "\n".join(tables)
     except Exception as e:
-        return f"Error listing tables: {str(e)}"
+        error_msg = f"Error listing tables: {str(e)}"
+        print(error_msg)  # Print to server console for debugging
+        return error_msg
 
 @mcp.tool()
 def describe_table(table_name: str) -> str:
@@ -258,26 +309,44 @@ def describe_table(table_name: str) -> str:
         if "rows" not in result or not result["rows"]:
             return f"Table '{table_name}' not found or is empty."
 
-        # Get column names from the schema
-        columns = result.get("schema", [])
-        column_names = [col.get("columnName", f"Column{i}") for i, col in enumerate(columns)]
+        # Debug information
+        debug_info = [
+            f"Debug for describe_table({table_name}):",
+            f"Result has {len(result.get('rows', []))} rows"
+        ]
+        
+        if len(result.get("rows", [])) > 0:
+            first_row = result["rows"][0]
+            debug_info.append(f"Keys in first row: {list(first_row.keys())}")
+            
+            # Add sample row data
+            import json
+            debug_info.append(f"Sample row: {json.dumps(first_row, indent=2)}")
+        
+        # Print debug info to server console
+        print("\n".join(debug_info))
 
+        # Expected column names for DESCRIBE command
+        expected_columns = ["Field", "Type", "Null", "Key", "Default", "Extra"]
+        
         # Format the results
-        output = [" | ".join(column_names)]
-        output.append("-" * len(" | ".join(column_names)))
+        output = [" | ".join(expected_columns)]
+        output.append("-" * len(" | ".join(expected_columns)))
 
         # Add data rows
         for row in result["rows"]:
-            # Get values in the same order as column names
+            # Map the row data to the expected columns
             row_values = []
-            for col_name in column_names:
+            for col_name in expected_columns:
                 val = row.get(col_name)
                 row_values.append(str(val) if val is not None else "NULL")
             output.append(" | ".join(row_values))
 
         return "\n".join(output)
     except Exception as e:
-        return f"Error describing table: {str(e)}"
+        error_msg = f"Error describing table: {str(e)}"
+        print(error_msg)  # Print to server console for debugging
+        return error_msg
 
 @mcp.tool()
 def greet(name: str) -> str:
