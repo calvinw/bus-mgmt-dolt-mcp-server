@@ -8,13 +8,15 @@ mcp = FastMCP("Dolt Database Explorer")
 
 # Configuration - you can adjust these as needed
 DOLT_API_URL = "https://www.dolthub.com/api/v1alpha1"
-DATABASE_OWNER = "calvinw"  
-DATABASE_NAME = "BusMgmtBenchmarks" 
-DATABASE_BRANCH = "main"
-API_TOKEN = None 
+DATABASE_OWNER = None # Set via --db argument
+DATABASE_NAME = None # Set via --db argument
+DATABASE_BRANCH = None # Set via --db argument
+API_TOKEN = None
 
 def get_dolt_query_url():
     """Get the URL for executing SQL queries against the Dolt database"""
+    if not all([DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH]):
+        raise ValueError("Database owner, name, and branch must be set via the --db argument.")
     return f"{DOLT_API_URL}/{DATABASE_OWNER}/{DATABASE_NAME}/{DATABASE_BRANCH}"
 
 def get_auth_headers():
@@ -42,7 +44,15 @@ def get_schema() -> str:
         # For each table, get its schema
         for row in tables_data.get("rows", []):
             # Extract table name from the row object based on JSON structure
-            table_name = row.get(f"Tables_in_{DATABASE_NAME}")
+            # Attempt to find the table name key dynamically
+            table_name = None
+            for key in row.keys():
+                if key.startswith("Tables_in_"):
+                    table_name = row[key]
+                    break
+            
+            if not table_name and len(row) == 1: # Fallback for simpler API responses
+                 table_name = list(row.values())[0]
 
             if table_name:
                 # Get schema for this table
@@ -123,6 +133,8 @@ def write_query(sql: str) -> str:
         headers = get_auth_headers()
         
         # Execute the write query using POST request
+        if not all([DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH]):
+             return "Error: Database owner, name, and branch must be set via the --db argument."
         write_url = f"{DOLT_API_URL}/{DATABASE_OWNER}/{DATABASE_NAME}/write/{DATABASE_BRANCH}/{DATABASE_BRANCH}"
         
         # Use params instead of json
@@ -146,7 +158,7 @@ def write_query(sql: str) -> str:
             def get_operation(op_name):
                 """Get the status of an operation by its name"""
                 op_res = requests.get(
-                    f"{DOLT_API_URL}/{DATABASE_OWNER}/{DATABASE_NAME}/write",
+                    f"{DOLT_API_URL}/{DATABASE_OWNER}/{DATABASE_NAME}/write", # Base URL for operations
                     params={"operationName": op_name},
                     headers=headers
                 )
@@ -188,9 +200,10 @@ def write_query(sql: str) -> str:
                 query_message = res_details.get("query_execution_message", "")
                 
                 # Add final commit step with empty query to finalize changes
-                merge_url = f"{DOLT_API_URL}/{DATABASE_OWNER}/{DATABASE_NAME}/write/{DATABASE_BRANCH}/{DATABASE_BRANCH}"
+                # Commit step uses the same write URL but with empty params
+                commit_url = f"{DOLT_API_URL}/{DATABASE_OWNER}/{DATABASE_NAME}/write/{DATABASE_BRANCH}/{DATABASE_BRANCH}"
                 merge_response = requests.post(
-                    merge_url,
+                    commit_url,
                     params=None,  # Empty query to finalize/commit changes
                     headers=headers
                 )
@@ -227,7 +240,7 @@ def list_tables() -> str:
     try:
         response = requests.get(
             get_dolt_query_url(),
-            params={"q": "SHOW TABLES WHERE Table_type = 'BASE TABLE'"}
+            params={"q": "SHOW TABLES;"}
         )
         response.raise_for_status()
         result = response.json()
@@ -238,11 +251,13 @@ def list_tables() -> str:
         # Debug information
         debug_info = [
             "Debug information:",
+            f"DATABASE_OWNER: {DATABASE_OWNER}",
             f"DATABASE_NAME: {DATABASE_NAME}",
-            f"Expected column: Tables_in_{DATABASE_NAME}"
+            f"DATABASE_BRANCH: {DATABASE_BRANCH}",
+            f"Expected column pattern: Tables_in_*"
         ]
         
-        if len(result["rows"]) > 0:
+        if result.get("rows") and len(result["rows"]) > 0:
             first_row = result["rows"][0]
             debug_info.append(f"Available keys in first row: {list(first_row.keys())}")
             
@@ -252,34 +267,22 @@ def list_tables() -> str:
         
         # Extract table names from the rows
         tables = []
-        expected_column = f"Tables_in_{DATABASE_NAME}"
         
-        for row in result["rows"]:
-            # Try both the expected column name and direct value extraction
+        for row in result.get("rows", []):
             table_name = None
+            # Look for a key starting with "Tables_in_"
+            for key in row.keys():
+                 if key.startswith("Tables_in_"):
+                     table_name = row[key]
+                     break
             
-            # Try the expected column name format
-            if expected_column in row:
-                table_name = row.get(expected_column)
-            # If row has only one key, use its value (simpler API responses)
-            elif len(row) == 1:
+            # Fallback if only one column is returned (simpler API response)
+            if not table_name and len(row) == 1:
                 table_name = list(row.values())[0]
-            # Look for any key ending with 'Tables_in_'
-            else:
-                for key in row:
-                    if key.startswith("Tables_in_"):
-                        table_name = row.get(key)
-                        break
-            
+
             if table_name:
-                tables.append(table_name)
-        
-        if not tables:
-            # If we couldn't extract tables with the methods above, 
-            # just return all values from all rows as a fallback
-            for row in result["rows"]:
-                tables.extend([str(v) for v in row.values() if v])
-        
+                tables.append(str(table_name)) # Ensure it's a string
+
         # Add tables info to debug output
         debug_info.append(f"Extracted tables count: {len(tables)}")
         if tables:
@@ -357,23 +360,30 @@ def main():
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Dolt Database Explorer MCP Server')
-    parser.add_argument('--owner', help='Database owner (default: calvinw)')
-    parser.add_argument('--database', help='Database name (default: BusMgmtBenchmarks)')
-    parser.add_argument('--branch', help='Database branch (default: main)')
+    parser.add_argument('--db', required=True, help='Database connection string in format: user/database/branch')
     parser.add_argument('--api-token', help='API token for write operations')
     
     args = parser.parse_args()
     
-    # Update configuration if provided in arguments
-    if args.owner:
-        DATABASE_OWNER = args.owner
-    if args.database:
-        DATABASE_NAME = args.database
-    if args.branch:
-        DATABASE_BRANCH = args.branch
+    # Parse the --db argument
+    try:
+        db_parts = args.db.split('/')
+        if len(db_parts) != 3:
+            raise ValueError("Invalid format for --db argument. Expected user/database/branch")
+        DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH = db_parts
+    except ValueError as e:
+        print(f"Error parsing --db argument: {e}")
+        exit(1) # Exit if db argument is invalid
+
+    # Update API token if provided
     if args.api_token:
         API_TOKEN = args.api_token
     
+    # Check if database details were set
+    if not all([DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH]):
+         print("Error: Failed to parse database details from --db argument.")
+         exit(1)
+
     print("Dolt Database Explorer MCP Server is running")
     print(f"Connected to: {DATABASE_OWNER}/{DATABASE_NAME}, branch: {DATABASE_BRANCH}")
     print(f"API Token: {'Configured' if API_TOKEN else 'Not configured (read-only)'}")
