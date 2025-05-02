@@ -498,34 +498,73 @@ def drop_view(view_name: str) -> str:
 def greet(name: str) -> str:
     return f"Hello, {name}!"
 
+@mcp.tool()
+def get_current_database() -> str:
+    """
+    Return the currently configured database connection string in user/database/branch format.
+    """
+    if all([DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH]):
+        return f"{DATABASE_OWNER}/{DATABASE_NAME}/{DATABASE_BRANCH}"
+    else:
+        # This case should ideally not happen if the server started correctly
+        return "Error: Database details are not fully configured."
+@mcp.tool()
+def set_current_database(db_string: str) -> str:
+    """
+    Set the active database connection string. Expects format: user/database/branch.
+    """
+    global DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH
+    try:
+        parts = db_string.split('/')
+        if len(parts) != 3:
+            raise ValueError("Invalid format. Expected user/database/branch")
+        
+        # Basic validation (can be expanded if needed)
+        owner, name, branch = parts
+        if not owner or not name or not branch:
+             raise ValueError("Database owner, name, and branch cannot be empty.")
+
+        DATABASE_OWNER = owner
+        DATABASE_NAME = name
+        DATABASE_BRANCH = branch
+        
+        # Optionally, you might want to test the connection here or clear cached schema etc.
+        
+        return f"Database successfully set to: {db_string}"
+    except ValueError as e:
+        return f"Error setting database: {str(e)}"
+    except Exception as e:
+        return f"An unexpected error occurred: {str(e)}"
 def main():
     global DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH, API_TOKEN
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Dolt Database Explorer MCP Server')
-    parser.add_argument('--db', required=True, help='Database connection string in format: user/database/branch')
+    parser.add_argument('--db', required=False, help='Database connection string in format: user/database/branch (default: calvinw/coffee-shop/main)') # Explicitly not required
     parser.add_argument('--api-token', help='API token for write operations')
     
     args = parser.parse_args()
     
-    # Parse the --db argument
+    # Determine the DB string to use (provided or default)
+    db_string_to_use = args.db if args.db else 'calvinw/coffee-shop/main' # Handle default manually
+
+    # Parse the database string
     try:
-        db_parts = args.db.split('/')
+        db_parts = db_string_to_use.split('/') # Use the determined string
         if len(db_parts) != 3:
-            raise ValueError("Invalid format for --db argument. Expected user/database/branch")
+            # This should ideally not happen with the default, but good practice to keep validation
+            raise ValueError(f"Invalid format for database string '{db_string_to_use}'. Expected user/database/branch")
         DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH = db_parts
     except ValueError as e:
-        print(f"Error parsing --db argument: {e}")
-        exit(1) # Exit if db argument is invalid
+        print(f"Error parsing database string: {e}")
+        exit(1)
 
     # Update API token if provided
     if args.api_token:
         API_TOKEN = args.api_token
     
-    # Check if database details were set
-    if not all([DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH]):
-         print("Error: Failed to parse database details from --db argument.")
-         exit(1)
+    # The check below is removed as the parsing logic now handles the default value correctly.
+    # The program will exit earlier if parsing fails.
 
     print("Dolt Database Explorer MCP Server is running")
     print(f"Connected to: {DATABASE_OWNER}/{DATABASE_NAME}, branch: {DATABASE_BRANCH}")
