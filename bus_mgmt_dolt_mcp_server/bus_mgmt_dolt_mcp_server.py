@@ -1,7 +1,7 @@
 import requests
 import argparse
-import json
 import os
+import json # Moved import to top
 from fastmcp import FastMCP, Client
 
 mcp = FastMCP("Dolt Database Explorer")
@@ -14,13 +14,17 @@ DATABASE_BRANCH = None # Set via --db argument
 API_TOKEN = None
 
 def get_dolt_query_url():
-    """Get the URL for executing SQL queries against the Dolt database"""
+    """
+Get the URL for executing SQL queries against the Dolt database
+    """
     if not all([DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH]):
         raise ValueError("Database owner, name, and branch must be set via the --db argument.")
     return f"{DOLT_API_URL}/{DATABASE_OWNER}/{DATABASE_NAME}/{DATABASE_BRANCH}"
 
 def get_auth_headers():
-    """Get headers with API token for authorized requests"""
+    """
+Get headers with API token for authorized requests
+    """
     headers = {"Content-Type": "application/json"}
     if API_TOKEN:
         headers["Authorization"] = API_TOKEN
@@ -28,7 +32,9 @@ def get_auth_headers():
 
 @mcp.resource("schema://main")
 def get_schema() -> str:
-    """Provide the database schema as a resource"""
+    """
+Provide the database schema as a resource
+    """
     try:
         # Query to get all tables
         tables_query = "SHOW TABLES"
@@ -76,7 +82,9 @@ def get_schema() -> str:
 
 @mcp.tool()
 def read_query(sql: str) -> str:
-    """Execute SQL read queries safely on the Dolt database"""
+    """
+Execute SQL read queries safely on the Dolt database
+    """
     try:
         # Execute the query
         response = requests.get(
@@ -113,7 +121,9 @@ def read_query(sql: str) -> str:
 
 @mcp.tool()
 def write_query(sql: str) -> str:
-    """Execute write operations (INSERT, UPDATE, DELETE) on the Dolt database"""
+    """
+Execute write operations (INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, RENAME) on the Dolt database. Handles polling for asynchronous operations.
+"""
     try:
         # Check if API token is available
         if not API_TOKEN:
@@ -121,13 +131,14 @@ def write_query(sql: str) -> str:
         
         # Verify this is a write operation
         sql_upper = sql.upper().strip()
-        if not (sql_upper.startswith('INSERT') or 
-                sql_upper.startswith('UPDATE') or 
+        if not (sql_upper.startswith('INSERT') or
+                sql_upper.startswith('UPDATE') or
                 sql_upper.startswith('DELETE') or
                 sql_upper.startswith('CREATE') or
                 sql_upper.startswith('DROP') or
-                sql_upper.startswith('ALTER')):
-            return "Error: This function only accepts write operations (INSERT, UPDATE, DELETE, CREATE, DROP, ALTER)"
+                sql_upper.startswith('ALTER') or
+                sql_upper.startswith('RENAME')): # Added RENAME
+            return "Error: This function only accepts write operations (INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, RENAME)" # Added RENAME to message
         
         # Set up headers with API token
         headers = get_auth_headers()
@@ -236,11 +247,15 @@ def write_query(sql: str) -> str:
 
 @mcp.tool()
 def list_tables() -> str:
-    """List the tables in the database"""
+    """
+List the BASE tables in the database (excluding views)
+    """
     try:
+        # Use SHOW FULL TABLES to filter by Table_type
+        query = "SHOW FULL TABLES WHERE Table_type = 'BASE TABLE';"
         response = requests.get(
             get_dolt_query_url(),
-            params={"q": "SHOW TABLES;"}
+            params={"q": query}
         )
         response.raise_for_status()
         result = response.json()
@@ -300,8 +315,12 @@ def list_tables() -> str:
 
 @mcp.tool()
 def describe_table(table_name: str) -> str:
-    """Describe the structure of a specific table"""
+    """
+Describe the structure of a specific table. Handles table names that require quoting (e.g., containing spaces) automatically.
+    """
     try:
+        # Ensure table name is quoted correctly, especially if it contains spaces or special chars
+        # The f-string with backticks handles this.
         response = requests.get(
             get_dolt_query_url(),
             params={"q": f"DESCRIBE `{table_name}`"}
@@ -351,6 +370,130 @@ def describe_table(table_name: str) -> str:
         print(error_msg)  # Print to server console for debugging
         return error_msg
 
+@mcp.tool()
+def list_views() -> str:
+    """
+List the views in the database
+    """
+    try:
+        # Use SHOW FULL TABLES to filter by Table_type
+        query = "SHOW FULL TABLES WHERE Table_type = 'VIEW';"
+        response = requests.get(
+            get_dolt_query_url(),
+            params={"q": query}
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if "rows" not in result or not result["rows"]:
+            print("[list_views Debug] No views found in query result.") # Added debug
+            return "No views found."
+
+        views = []
+        # SHOW FULL TABLES returns 'Tables_in_...' and 'Table_type' columns
+        # Extract the view name from the 'Tables_in_...' column
+        print(f"[list_views Debug] Processing {len(result.get('rows', []))} rows...") # Added debug
+        for i, row in enumerate(result.get("rows", [])):
+            view_name = None
+            # Look for a key starting with "Tables_in_"
+            for key in row.keys():
+                 if key.startswith("Tables_in_"):
+                     view_name = row[key]
+                     break
+
+            # Fallback if only one column is returned (less likely with SHOW FULL TABLES)
+            if not view_name and len(row) == 1:
+                view_name = list(row.values())[0]
+
+            if view_name:
+                views.append(str(view_name)) # Ensure it's a string
+                print(f"[list_views Debug] Row {i}: Extracted view name: {view_name}") # Added debug
+            else:
+                print(f"[list_views Debug] Row {i}: Could not extract view name from row: {row}") # Added debug
+
+
+        final_output = "\n".join(views)
+        print(f"[list_views Debug] Final list of views: {views}") # Added debug
+        print(f"[list_views Debug] Returning string:\n{final_output}") # Added debug
+        return final_output # This already matches list_tables format
+
+    except Exception as e:
+        error_msg = f"Error listing views: {str(e)}"
+        print(f"[list_views Error] {error_msg}") # Enhanced error logging
+        return error_msg
+
+@mcp.tool()
+def describe_view(view_name: str) -> str:
+    """
+Show the CREATE VIEW statement for a specific view. Handles view names that require quoting (e.g., containing spaces) automatically.
+    """
+    try:
+        # Ensure view name is quoted correctly
+        query = f"SHOW CREATE VIEW `{view_name}`"
+        response = requests.get(
+            get_dolt_query_url(),
+            params={"q": query}
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if "rows" not in result or not result["rows"]:
+            return f"View '{view_name}' not found or query failed."
+
+        # Extract the 'Create View' statement
+        # The exact key might vary slightly based on Dolt API version, adjust if needed
+        create_statement = None
+        if result["rows"]:
+             row = result["rows"][0]
+             # Common keys are 'Create View' or 'VIEW_DEFINITION'
+             if "Create View" in row:
+                 create_statement = row["Create View"]
+             elif "VIEW_DEFINITION" in row: # Check alternative key
+                 create_statement = row["VIEW_DEFINITION"]
+             elif len(row) >= 2: # Fallback if keys are generic
+                 # Assuming the definition is often the second column
+                 create_statement = list(row.values())[1]
+
+
+        if create_statement:
+            return create_statement
+        else:
+            # Provide raw row data if specific key isn't found
+            # import json # Removed local import
+            return f"Could not extract view definition. Raw row data: {json.dumps(result['rows'][0])}"
+
+    except Exception as e:
+        return f"Error describing view '{view_name}': {str(e)}"
+
+@mcp.tool()
+def create_view(view_name: str, select_query: str) -> str:
+    """
+Create a new view in the database using the provided SELECT query. Handles view names that require quoting (e.g., containing spaces) automatically. Uses the write_query tool for execution.
+    """
+    # Basic validation
+    if not view_name or not select_query:
+        return "Error: Both view_name and select_query are required."
+    if not select_query.upper().strip().startswith("SELECT"):
+         return "Error: select_query must start with SELECT."
+
+    sql = f"CREATE VIEW `{view_name}` AS {select_query}"
+    # Use the existing write_query tool to handle execution, auth, and polling
+    return write_query(sql)
+
+@mcp.tool()
+def drop_view(view_name: str) -> str:
+    """
+ Drop a view from the database. Handles view names that require quoting (e.g., containing spaces) automatically. Uses the write_query tool for execution.
+    """
+    if not view_name:
+        return "Error: view_name is required."
+
+    # Ensure view name is quoted correctly
+    sql = f"DROP VIEW IF EXISTS `{view_name}`"
+    # Use the existing write_query tool
+    return write_query(sql)
+
+# This content is removed as it was moved above
 @mcp.tool()
 def greet(name: str) -> str:
     return f"Hello, {name}!"

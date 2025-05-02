@@ -14,3 +14,4 @@ uv.lock
 #pypi publish script
 build_and_publish.sh
 run_inspector.sh
+run_uvx.sh
