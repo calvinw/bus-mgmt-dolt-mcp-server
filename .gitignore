@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
+.roo
 
 uv.lock
 
@@ -17,3 +18,4 @@ run_inspector.sh
 run_uvx.sh
 run_uvx_local.sh
 run_uvx_pypi.sh
+

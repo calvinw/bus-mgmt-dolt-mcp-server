@@ -81,6 +81,31 @@ Provide the database schema as a resource
         return f"Error retrieving schema: {str(e)}"
 
 @mcp.tool()
+def export_views_statements() -> str:
+    """
+    Export DROP VIEW and CREATE VIEW statements for all views.
+    First outputs all DROP VIEW IF EXISTS statements, then outputs the CREATE VIEW statements.
+    """
+    try:
+        views_str = list_views()
+        if not views_str or "Error" in views_str or views_str.strip() == "No views found.":
+            return "No views found."
+        # Split the result into individual view names, filtering out any empty lines
+        views = [v.strip() for v in views_str.splitlines() if v.strip()]
+        results = []
+        for view in views:
+            results.append(f"DROP VIEW IF EXISTS `{view}`;")
+            # Get the CREATE VIEW statement
+            create_statement = describe_view(view)
+            # Add a newline between DROP and CREATE for readability if needed
+            results.append(create_statement + "\n")
+        # Join all statements, removing any trailing newline from the last entry
+        return "\n".join(results).strip()
+    except Exception as e:
+        return f"Error exporting views: {str(e)}"
+
+
+@mcp.tool()
 def read_query(sql: str) -> str:
     """
 Execute SQL read queries safely on the Dolt database
@@ -148,10 +173,10 @@ Execute write operations (INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, RENAME) o
              return "Error: Database owner, name, and branch must be set via the --db argument."
         write_url = f"{DOLT_API_URL}/{DATABASE_OWNER}/{DATABASE_NAME}/write/{DATABASE_BRANCH}/{DATABASE_BRANCH}"
         
-        # Use params instead of json
+        # Use JSON body payload for query
         response = requests.post(
             write_url,
-            params={"q": sql},
+            json={"query": sql},
             headers=headers
         )
         response.raise_for_status()
@@ -215,7 +240,7 @@ Execute write operations (INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, RENAME) o
                 commit_url = f"{DOLT_API_URL}/{DATABASE_OWNER}/{DATABASE_NAME}/write/{DATABASE_BRANCH}/{DATABASE_BRANCH}"
                 merge_response = requests.post(
                     commit_url,
-                    params=None,  # Empty query to finalize/commit changes
+                    json={},  # Empty JSON payload to finalize/commit changes
                     headers=headers
                 )
                 
@@ -225,13 +250,13 @@ Execute write operations (INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, RENAME) o
                         # Poll the commit operation
                         commit_poll_result = poll_operation(merge_result["operation_name"])
                         if commit_poll_result.get("done", False):
-                            return f"Write operation successful and committed: {query_message}"
+                            return f"Write operation successful and committed: Commit finalized successfully"
                         else:
-                            return f"Write operation successful but commit is still processing: {query_message}"
+                            return f"Write operation successful but commit is still processing: Commit finalized successfully"
                     else:
-                        return f"Write operation successful: {query_message}"
+                        return f"Write operation successful: Commit finalized successfully"
                 else:
-                    return f"Write operation successful but commit failed: {query_message}"
+                    return f"Write operation successful but commit failed: Commit finalized successfully"
             
             return f"Write operation status unknown. Operation ID: {operation_name}"
         
@@ -368,6 +393,61 @@ Describe the structure of a specific table. Handles table names that require quo
     except Exception as e:
         error_msg = f"Error describing table: {str(e)}"
         print(error_msg)  # Print to server console for debugging
+@mcp.tool()
+def download_table_csv(table_name: str) -> str:
+    """
+    Downloads the content of a specific table as CSV text using the DoltHub API.
+    Handles table names that require quoting automatically.
+    """
+    try:
+        if not all([DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH]):
+            raise ValueError("Database owner, name, and branch must be set.")
+
+        # Construct the URL for CSV download based on the working example provided.
+        # Format: https://www.dolthub.com/csv/{owner}/{db_name}/{branch}/{table_name}
+        # This uses a different base URL than the API endpoints.
+        csv_url = f"https://www.dolthub.com/csv/{DATABASE_OWNER}/{DATABASE_NAME}/{DATABASE_BRANCH}/{table_name}"
+
+        # Authentication might not be needed or handled differently for this endpoint,
+        # but we'll include the standard headers just in case.
+        headers = get_auth_headers()
+
+        print(f"[download_table_csv] Requesting CSV for table '{table_name}' from URL: {csv_url}") # Server log
+
+        response = requests.get(
+            csv_url,
+            headers=headers
+        )
+
+        print(f"[download_table_csv] Response status code: {response.status_code}") # Server log
+
+        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+
+        # Check content type to be sure we got CSV, though raise_for_status should catch most errors
+        content_type = response.headers.get('Content-Type', '')
+        if 'text/csv' not in content_type:
+             print(f"[download_table_csv] Warning: Expected Content-Type 'text/csv' but got '{content_type}'") # Server log
+
+        # Return the raw CSV text content
+        return response.text
+
+    except requests.exceptions.RequestException as e:
+        # Handle specific request errors (like 404 Not Found, 401 Unauthorized)
+        error_msg = f"Error downloading CSV for table '{table_name}': Request failed - {str(e)}"
+        if e.response is not None:
+            error_msg += f" (Status code: {e.response.status_code}, Response: {e.response.text[:200]}...)" # Include response details
+        print(f"[download_table_csv] {error_msg}") # Server log
+        return error_msg
+    except ValueError as e:
+        # Handle configuration errors
+        error_msg = f"Error downloading CSV for table '{table_name}': Configuration error - {str(e)}"
+        print(f"[download_table_csv] {error_msg}") # Server log
+        return error_msg
+    except Exception as e:
+        # Handle any other unexpected errors
+        error_msg = f"Error downloading CSV for table '{table_name}': An unexpected error occurred - {str(e)}"
+        print(f"[download_table_csv] {error_msg}") # Server log
+        return error_msg
         return error_msg
 
 @mcp.tool()
@@ -495,9 +575,33 @@ def drop_view(view_name: str) -> str:
 
 # This content is removed as it was moved above
 @mcp.tool()
+def drop_all_views() -> str:
+    """
+    Drop all views from the database by listing all views and invoking drop_view for each.
+    If a drop fails due to a timeout, the function will retry the drop once.
+    """
+    try:
+        views_output = list_views()
+        views = [v.strip() for v in views_output.splitlines() if v.strip()]
+        if not views:
+            return "No views found to drop."
+        results = []
+        for view in views:
+            result = drop_view(view)
+            if "MCP error -32001: Request timed out" in result:
+                # Retry once if a timeout occurs
+                retry_result = drop_view(view)
+                result = f"{result} | Retry: {retry_result}"
+            results.append(f"{view}: {result}")
+        return "\n".join(results)
+    except Exception as e:
+        return f"Error dropping all views: {str(e)}"
+@mcp.tool()
 def greet(name: str) -> str:
     return f"Hello, {name}!"
 
+
+    
 @mcp.tool()
 def get_current_database() -> str:
     """
@@ -508,6 +612,7 @@ def get_current_database() -> str:
     else:
         # This case should ideally not happen if the server started correctly
         return "Error: Database details are not fully configured."
+    
 @mcp.tool()
 def set_current_database(db_string: str) -> str:
     """
@@ -535,6 +640,7 @@ def set_current_database(db_string: str) -> str:
         return f"Error setting database: {str(e)}"
     except Exception as e:
         return f"An unexpected error occurred: {str(e)}"
+    
 def main():
     global DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH, API_TOKEN
     
@@ -569,4 +675,5 @@ def main():
     print("Dolt Database Explorer MCP Server is running")
     print(f"Connected to: {DATABASE_OWNER}/{DATABASE_NAME}, branch: {DATABASE_BRANCH}")
     print(f"API Token: {'Configured' if API_TOKEN else 'Not configured (read-only)'}")
+    print(f"Development version")
     mcp.run()
