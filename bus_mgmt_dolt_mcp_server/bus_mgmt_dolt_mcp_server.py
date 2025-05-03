@@ -448,6 +448,65 @@ def download_table_csv(table_name: str) -> str:
         error_msg = f"Error downloading CSV for table '{table_name}': An unexpected error occurred - {str(e)}"
         print(f"[download_table_csv] {error_msg}") # Server log
         return error_msg
+
+@mcp.tool()
+def download_view_csv(view_name: str) -> str:
+    """
+    Downloads the content of a specific view as CSV text using the DoltHub API.
+    Handles view names that require quoting automatically.
+    (Functionally identical to download_table_csv, provided for clarity).
+    """
+    try:
+        if not all([DATABASE_OWNER, DATABASE_NAME, DATABASE_BRANCH]):
+            raise ValueError("Database owner, name, and branch must be set.")
+
+        # Construct the URL for CSV download based on the working example provided.
+        # Format: https://www.dolthub.com/csv/{owner}/{db_name}/{branch}/{view_name}
+        csv_url = f"https://www.dolthub.com/csv/{DATABASE_OWNER}/{DATABASE_NAME}/{DATABASE_BRANCH}/{view_name}"
+
+        headers = get_auth_headers()
+
+        print(f"[download_view_csv] Requesting CSV for view '{view_name}' from URL: {csv_url}") # Server log
+
+        response = requests.get(
+            csv_url,
+            headers=headers
+        )
+
+        print(f"[download_view_csv] Response status code: {response.status_code}") # Server log
+
+        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+
+        content_type = response.headers.get('Content-Type', '')
+        if 'text/csv' not in content_type:
+             print(f"[download_view_csv] Warning: Expected Content-Type 'text/csv' but got '{content_type}'") # Server log
+
+        return response.text
+
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Error downloading CSV for view '{view_name}': Request failed - {str(e)}"
+        if e.response is not None:
+            error_msg += f" (Status code: {e.response.status_code}, Response: {e.response.text[:200]}...)"
+        print(f"[download_view_csv] {error_msg}") # Server log
+        return error_msg
+    except ValueError as e:
+        error_msg = f"Error downloading CSV for view '{view_name}': Configuration error - {str(e)}"
+        print(f"[download_view_csv] {error_msg}") # Server log
+        return error_msg
+    except Exception as e:
+        error_msg = f"Error downloading CSV for view '{view_name}': An unexpected error occurred - {str(e)}"
+        print(f"[download_view_csv] {error_msg}") # Server log
+        return error_msg
+# Removed duplicate except block from line 500
+        # Handle configuration errors
+        error_msg = f"Error downloading CSV for table '{table_name}': Configuration error - {str(e)}"
+        print(f"[download_table_csv] {error_msg}") # Server log
+        return error_msg
+    except Exception as e:
+        # Handle any other unexpected errors
+        error_msg = f"Error downloading CSV for table '{table_name}': An unexpected error occurred - {str(e)}"
+        print(f"[download_table_csv] {error_msg}") # Server log
+        return error_msg
         return error_msg
 
 @mcp.tool()
@@ -675,5 +734,5 @@ def main():
     print("Dolt Database Explorer MCP Server is running")
     print(f"Connected to: {DATABASE_OWNER}/{DATABASE_NAME}, branch: {DATABASE_BRANCH}")
     print(f"API Token: {'Configured' if API_TOKEN else 'Not configured (read-only)'}")
-    print(f"Development version")
+    print(f"PyPi version")
     mcp.run()
